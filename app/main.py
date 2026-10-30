@@ -9,16 +9,16 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select, func, delete as sql_delete
 from sqlalchemy.orm import Session
 
-from app.ai import extract_recap, generate_catchup_brief
+from app.ai import extract_recap, generate_catchup_brief, link_knowledge
 from app.db import Base, engine, get_db
 from app.logger import log, correlation_id_var
 from app.models import (
     AIRun, ActionHistory, ActionItem, CarryForward,
-    Decision, Meeting, Participant, Transcript,
+    Decision, KnowledgeDocument, KnowledgeLink, Meeting, Participant, Transcript, User,
 )
 from app.schemas import (
-    CarryCreate, CatchupCreate, MeetingCreate, MeetingUpdate,
-    TaskUpdate, TranscriptCreate,
+    CarryCreate, CatchupCreate, KnowledgeDocumentCreate, MeetingCreate, MeetingUpdate,
+    ParticipantCreate, TaskUpdate, TranscriptCreate, UserCreate,
 )
 
 # ── App setup ──────────────────────────────────────────────────────────────────
@@ -85,6 +85,16 @@ def meeting_payload(db: Session, meeting: Meeting) -> dict:
             item_data = _task_dict(item)
             item_data.update({"carried_from_meeting_id": item.meeting_id, "carry_note": carry.note})
             carried_items.append(item_data)
+    participants = db.execute(
+        select(Participant, User).join(User, Participant.user_id == User.id)
+        .where(Participant.meeting_id == meeting.id)
+    ).all()
+    knowledge_rows = db.execute(
+        select(KnowledgeLink, KnowledgeDocument)
+        .join(KnowledgeDocument, KnowledgeLink.document_id == KnowledgeDocument.id)
+        .where(KnowledgeLink.meeting_id == meeting.id)
+        .order_by(KnowledgeLink.created_at.desc())
+    ).all()
     return {
         "id": meeting.id, "title": meeting.title, "type": meeting.type,
         "status": meeting.status,
@@ -97,6 +107,16 @@ def meeting_payload(db: Session, meeting: Meeting) -> dict:
         # audit history is intact; this projection makes it actionable in the
         # next meeting as well.
         "carried_forward_items": carried_items,
+        "participants": [
+            {"id": user.id, "name": user.name, "email": user.email,
+             "role": user.role, "attendance_status": participant.attendance_status}
+            for participant, user in participants
+        ],
+        "knowledge_links": [
+            {"id": link.id, "document_id": doc.id, "title": doc.title,
+             "source_type": doc.source_type, "relevance_note": link.relevance_note}
+            for link, doc in knowledge_rows
+        ],
         "decisions": [{"id": d.id, "title": d.title, "description": d.description, "rationale": d.rationale} for d in decisions],
         "transcript_count": len(transcripts),
     }
@@ -117,6 +137,23 @@ def dashboard(db: Session = Depends(get_db)):
         .where(ActionItem.status.not_in(["completed", "cancelled"]))
     ) or 0
     return {"meetings": [meeting_payload(db, m) for m in meetings], "open_tasks": open_count}
+
+
+# ── People and attendance ─────────────────────────────────────────────────────
+@app.get("/api/users")
+def list_users(db: Session = Depends(get_db)):
+    users = db.scalars(select(User).where(User.is_active.is_(True)).order_by(User.name)).all()
+    return [{"id": u.id, "name": u.name, "email": u.email, "role": u.role} for u in users]
+
+
+@app.post("/api/users", status_code=201)
+def create_user(data: UserCreate, db: Session = Depends(get_db)):
+    if db.scalar(select(User).where(User.email == data.email)):
+        raise HTTPException(409, "A user with this email already exists")
+    user = User(**data.model_dump())
+    db.add(user); db.commit(); db.refresh(user)
+    log.info("user_created", extra={"event": "user_created", "user_id": user.id})
+    return {"id": user.id, "name": user.name, "email": user.email, "role": user.role}
 
 
 # ── Meetings ───────────────────────────────────────────────────────────────────
@@ -147,6 +184,24 @@ def update_meeting(meeting_id: str, data: MeetingUpdate, db: Session = Depends(g
         setattr(meeting, field, value or None)
     db.commit()
     log.info("meeting_updated", extra={"event": "meeting_updated", "meeting_id": meeting_id})
+    return meeting_payload(db, meeting)
+
+
+@app.post("/api/meetings/{meeting_id}/participants", status_code=201)
+def add_participant(meeting_id: str, data: ParticipantCreate, db: Session = Depends(get_db)):
+    meeting, user = db.get(Meeting, meeting_id), db.get(User, data.user_id)
+    if not meeting or not user:
+        raise HTTPException(404, "Meeting or user not found")
+    existing = db.scalar(select(Participant).where(
+        Participant.meeting_id == meeting_id, Participant.user_id == data.user_id,
+    ))
+    if existing:
+        existing.attendance_status = data.attendance_status
+    else:
+        db.add(Participant(meeting_id=meeting_id, user_id=data.user_id,
+                           attendance_status=data.attendance_status))
+    db.commit()
+    log.info("participant_added", extra={"event": "participant_added", "meeting_id": meeting_id, "user_id": data.user_id})
     return meeting_payload(db, meeting)
 
 
@@ -269,22 +324,78 @@ def update_task(task_id: str, data: TaskUpdate, db: Session = Depends(get_db)):
     task = db.get(ActionItem, task_id)
     if not task:
         raise HTTPException(404, "Task not found")
-    if data.status not in {"open", "in_progress", "blocked", "completed", "cancelled"}:
+    if data.status is None and data.owner_name is None:
+        raise HTTPException(422, "Provide a status or an owner")
+    if data.status is not None and data.status not in {"open", "in_progress", "blocked", "completed", "cancelled"}:
         raise HTTPException(422, "Invalid status")
     if data.status in {"completed", "cancelled"} and not data.outcome:
         raise HTTPException(422, "An outcome is required when closing a task")
     old = task.status
-    task.status = data.status
+    old_owner = task.owner_name
+    if data.status is not None:
+        task.status = data.status
+    if data.owner_name is not None and data.owner_name.strip() != task.owner_name:
+        task.owner_name = data.owner_name.strip() or None
+        db.add(ActionHistory(action_item_id=task.id, event_type="reassigned",
+                             detail=f"{old_owner or 'Unassigned'} -> {task.owner_name or 'Unassigned'}"))
+        log.info("task_reassigned", extra={"event": "task_reassigned", "task_id": task_id,
+                                            "old_owner": old_owner, "new_owner": task.owner_name})
     if data.outcome:
         task.outcome = data.outcome
-    db.add(ActionHistory(action_item_id=task.id, event_type="status_changed",
-                         detail=f"{old} -> {task.status}"))
+    if data.status is not None:
+        db.add(ActionHistory(action_item_id=task.id, event_type="status_changed",
+                             detail=f"{old} -> {task.status}"))
     db.commit()
-    log.info("task_status_changed", extra={
-        "event": "task_status_changed", "task_id": task_id,
-        "old_status": old, "new_status": task.status,
-    })
+    if data.status is not None:
+        log.info("task_status_changed", extra={
+            "event": "task_status_changed", "task_id": task_id,
+            "old_status": old, "new_status": task.status,
+        })
     return _task_dict(task)
+
+
+# ── Knowledge base ────────────────────────────────────────────────────────────
+@app.get("/api/knowledge-documents")
+def list_knowledge_documents(db: Session = Depends(get_db)):
+    docs = db.scalars(select(KnowledgeDocument).order_by(KnowledgeDocument.created_at.desc())).all()
+    return [{"id": d.id, "title": d.title, "content": d.content,
+             "source_type": d.source_type, "created_at": d.created_at.isoformat()} for d in docs]
+
+
+@app.post("/api/knowledge-documents", status_code=201)
+def create_knowledge_document(data: KnowledgeDocumentCreate, db: Session = Depends(get_db)):
+    doc = KnowledgeDocument(**data.model_dump())
+    db.add(doc); db.commit(); db.refresh(doc)
+    log.info("knowledge_document_created", extra={"event": "knowledge_document_created", "document_id": doc.id})
+    return {"id": doc.id, "title": doc.title, "content": doc.content, "source_type": doc.source_type}
+
+
+@app.post("/api/meetings/{meeting_id}/knowledge-links/generate")
+def generate_knowledge_links(meeting_id: str, db: Session = Depends(get_db)):
+    meeting = db.get(Meeting, meeting_id)
+    if not meeting:
+        raise HTTPException(404, "Meeting not found")
+    documents = list_knowledge_documents(db)
+    if not documents:
+        raise HTTPException(422, "Add a knowledge document before generating links")
+    t0 = time.perf_counter()
+    try:
+        suggestions = link_knowledge(meeting_payload(db, meeting), documents)
+        existing = {x.document_id for x in db.scalars(select(KnowledgeLink).where(KnowledgeLink.meeting_id == meeting_id)).all()}
+        for item in suggestions:
+            if item["document_id"] not in existing:
+                db.add(KnowledgeLink(meeting_id=meeting_id, document_id=item["document_id"],
+                                     relevance_note=item["relevance"], created_by_ai=True))
+        db.commit()
+        latency = int((time.perf_counter() - t0) * 1000)
+        log.info("knowledge_links_generated", extra={"event": "knowledge_linking", "meeting_id": meeting_id,
+                                                       "latency_ms": latency, "status": "succeeded"})
+        return meeting_payload(db, meeting)
+    except Exception as exc:
+        latency = int((time.perf_counter() - t0) * 1000)
+        log.error("knowledge_linking_failed", extra={"event": "knowledge_linking", "meeting_id": meeting_id,
+                                                        "latency_ms": latency, "status": "failed", "error": str(exc)[:200]})
+        raise HTTPException(502, "Knowledge linking failed. Your documents remain saved; try again later.")
 
 
 @app.post("/api/tasks/{task_id}/carry-forward")

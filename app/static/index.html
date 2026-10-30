@@ -18,6 +18,8 @@
       <nav class="side-nav" aria-label="Workspace navigation">
         <a class="nav-item active" href="#top"><span>▦</span> Overview</a>
         <a class="nav-item" href="#meetings"><span>◫</span> Meetings</a>
+        <a class="nav-item" href="#people"><span>♙</span> People</a>
+        <a class="nav-item" href="#knowledge"><span>◇</span> Knowledge</a>
         <a class="nav-item" href="#risks"><span>⌁</span> Risk radar <em id="sideRiskCount">0</em></a>
       </nav>
 
@@ -75,6 +77,19 @@
         <div id="radarPanel" class="radar-panel hidden"></div>
       </section>
 
+      <section class="resource-grid">
+        <article id="people" class="resource-card">
+          <div class="section-title-row"><div><p class="section-kicker">TEAM DIRECTORY</p><h2>People and attendance</h2></div><button class="btn btn-secondary" id="addPerson">Add person</button></div>
+          <p class="hint">Add people once, then invite them to any meeting and reassign work with an auditable history.</p>
+          <div id="peopleList" class="resource-list"></div>
+        </article>
+        <article id="knowledge" class="resource-card">
+          <div class="section-title-row"><div><p class="section-kicker">KNOWLEDGE LIBRARY</p><h2>Reusable team context</h2></div><button class="btn btn-secondary" id="addKnowledge">Add document</button></div>
+          <p class="hint">Store playbooks, decisions, and reference notes; AI can link relevant documents to each meeting.</p>
+          <div id="knowledgeList" class="resource-list"></div>
+        </article>
+      </section>
+
       <section id="meetings" class="content-grid">
         <aside class="meeting-pane">
           <div class="pane-head">
@@ -125,6 +140,22 @@
     <div id="briefResult"></div>
     <menu><button type="button" class="btn btn-secondary" id="cancelBrief">Close</button><button type="button" class="btn btn-primary" id="generateBriefBtn">Generate brief</button></menu>
   </div></dialog>
+
+  <dialog id="personDialog"><form id="personForm">
+    <p class="dialog-kicker">TEAM DIRECTORY</p><h2>Add a person</h2>
+    <label>Name <input name="name" required minlength="2" placeholder="e.g. Asha Patel"></label>
+    <label>Email <input name="email" type="email" required placeholder="asha@company.com"></label>
+    <label>Role <input name="role" placeholder="e.g. Product manager"></label>
+    <menu><button type="button" class="btn btn-secondary" id="cancelPerson">Cancel</button><button type="submit" class="btn btn-primary">Add person</button></menu>
+  </form></dialog>
+
+  <dialog id="knowledgeDialog"><form id="knowledgeForm">
+    <p class="dialog-kicker">KNOWLEDGE LIBRARY</p><h2>Add team context</h2>
+    <label>Document title <input name="title" required minlength="3" placeholder="Launch communication playbook"></label>
+    <label>Source <select name="source_type"><option value="team_document">Team document</option><option value="personal_note">Personal note</option><option value="email">Email</option><option value="chat">Chat</option></select></label>
+    <label>Content <textarea name="content" rows="7" required minlength="20" placeholder="Paste the context your team should retain…"></textarea></label>
+    <menu><button type="button" class="btn btn-secondary" id="cancelKnowledge">Cancel</button><button type="submit" class="btn btn-primary">Save document</button></menu>
+  </form></dialog>
 
   <dialog id="confirmDialog"><div class="confirm-box"><p id="confirmMsg"></p><menu><button type="button" class="btn btn-secondary" id="confirmNo">Cancel</button><button type="button" id="confirmYes" class="btn btn-danger">Delete</button></menu></div></dialog>
   <div id="toastContainer"></div>

@@ -3,6 +3,8 @@ let currentId      = null;
 let currentMeeting = null;
 let allMeetings    = [];
 let carryTaskId    = null;
+let people         = [];
+let knowledgeDocs  = [];
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
 const $ = s => document.querySelector(s);
@@ -114,6 +116,18 @@ async function load() {
   }
 }
 
+async function loadResources() {
+  try {
+    [people, knowledgeDocs] = await Promise.all([api('/api/users'), api('/api/knowledge-documents')]);
+    $('#peopleList').innerHTML = people.length ? people.map(p => `
+      <div class="resource-item"><span class="participant-row"><span class="person-chip">${esc(p.name).slice(0, 2).toUpperCase()}</span><span><b>${esc(p.name)}</b><small>${esc(p.role || 'Team member')} · ${esc(p.email)}</small></span></span></div>`).join('')
+      : '<p class="empty-hint">No people yet. Add your team to assign and invite them.</p>';
+    $('#knowledgeList').innerHTML = knowledgeDocs.length ? knowledgeDocs.slice(0, 3).map(d => `
+      <div class="resource-item"><span><b>${esc(d.title)}</b><small>${esc(d.source_type.replace(/_/g, ' '))}</small></span><span class="badge">saved</span></div>`).join('')
+      : '<p class="empty-hint">No documents yet. Add a playbook, note, email, or chat context.</p>';
+  } catch (e) { toast(`Could not load workspace resources: ${e.message}`, 'error'); }
+}
+
 // ── Meeting detail ─────────────────────────────────────────────────────────────
 async function show(id) {
   currentId = id;
@@ -157,6 +171,14 @@ function renderDetail() {
       ).join('')}</ul>`
     : '<p class="empty-hint">No decisions yet.</p>';
 
+  const peopleHtml = m.participants?.length
+    ? m.participants.map(p => `<span class="badge">${esc(p.name)} · ${esc(p.attendance_status)}</span>`).join(' ')
+    : '<span class="empty-hint">No attendees added yet.</span>';
+  const availablePeople = people.filter(p => !(m.participants || []).some(mp => mp.id === p.id));
+  const knowledgeHtml = m.knowledge_links?.length
+    ? m.knowledge_links.map(link => `<div class="knowledge-link"><b>◇ ${esc(link.title)}</b><span class="badge">${esc(link.source_type.replace(/_/g, ' '))}</span><p>${esc(link.relevance_note)}</p></div>`).join('')
+    : '<p class="empty-hint">No linked knowledge yet.</p>';
+
   $('#detail').innerHTML = `
     <div class="detail-header">
       <div>
@@ -176,6 +198,13 @@ function renderDetail() {
 
     ${m.agenda ? `<p class="agenda-line"><b>Agenda:</b> ${esc(m.agenda)}</p>` : ''}
     ${m.manual_notes ? `<div class="section"><h3>Notes</h3><p class="pre-wrap">${esc(m.manual_notes)}</p></div>` : ''}
+
+    <div class="section">
+      <div class="section-hd"><h3>People & attendance</h3><span class="badge">${m.participants?.length || 0}</span></div>
+      <div class="participant-row">${peopleHtml}
+        ${availablePeople.length ? `<button class="btn-sm" onclick="addParticipant()">＋ Add attendee</button>` : ''}
+      </div>
+    </div>
 
     ${m.approved_summary ? `
       <div class="section approved-summary">
@@ -204,6 +233,12 @@ function renderDetail() {
         <span class="badge">${m.decisions.length}</span>
       </div>
       ${decsHtml}
+    </div>
+
+    <div class="section">
+      <div class="section-hd"><h3>◇ Connected knowledge</h3><button class="btn-sm btn-carry" onclick="generateKnowledgeLinks()">✦ Find AI links</button></div>
+      <p class="hint">AI connects this record to relevant saved team documents; the original source stays available for review.</p>
+      ${knowledgeHtml}
     </div>
 
     <div class="section">
@@ -242,6 +277,7 @@ function taskCard(t) {
             ${t.status !== 'blocked'     ? `<button class="btn-sm btn-warn" onclick="quickStatus('${t.id}','blocked')">⚠ Blocked</button>` : ''}
             <button class="btn-sm btn-success" onclick="closeTask('${t.id}','completed')">✓ Done</button>
             <button class="btn-sm btn-muted"   onclick="closeTask('${t.id}','cancelled')">✕ Cancel</button>
+            <button class="btn-sm" onclick="reassignTask('${t.id}')">♙ Assign</button>
             ${others.length ? `<button class="btn-sm btn-carry" onclick="openCarry('${t.id}')">↗ Carry</button>` : ''}
           </div>` : ''}
       </div>
@@ -253,6 +289,45 @@ async function quickStatus(id, status) {
   try {
     await api('/api/tasks/' + id, { method: 'PATCH', body: JSON.stringify({ status }) });
     await refreshDetail();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function reassignTask(id) {
+  const options = people.map(p => p.name).join(', ');
+  const owner = prompt(`Assign this action item to a teammate. Available people: ${options || 'add people in the directory first'}`);
+  if (owner === null) return;
+  try {
+    await api('/api/tasks/' + id, { method: 'PATCH', body: JSON.stringify({ owner_name: owner.trim() }) });
+    toast(owner.trim() ? `Assigned to ${owner.trim()}.` : 'Task is now unassigned.', 'success');
+    await refreshDetail();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function addParticipant() {
+  const m = currentMeeting;
+  const available = people.filter(p => !(m.participants || []).some(mp => mp.id === p.id));
+  if (!available.length) { toast('Add a person to the directory first.', 'warn'); return; }
+  const choices = available.map((p, i) => `${i + 1}. ${p.name}`).join('\n');
+  const answer = prompt(`Choose an attendee by number:\n${choices}`);
+  if (answer === null) return;
+  const person = available[Number(answer) - 1];
+  if (!person) { toast('Choose a valid number from the list.', 'warn'); return; }
+  try {
+    currentMeeting = await api(`/api/meetings/${currentId}/participants`, {
+      method: 'POST', body: JSON.stringify({ user_id: person.id, attendance_status: 'invited' }),
+    });
+    toast(`${person.name} added as an attendee.`);
+    renderDetail();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function generateKnowledgeLinks() {
+  if (!knowledgeDocs.length) { toast('Add a knowledge document first.', 'warn'); return; }
+  try {
+    toast('Finding relevant knowledge…', 'success');
+    currentMeeting = await api(`/api/meetings/${currentId}/knowledge-links/generate`, { method: 'POST' });
+    renderDetail();
+    toast('Knowledge links updated.');
   } catch (e) { toast(e.message, 'error'); }
 }
 
@@ -409,6 +484,32 @@ $('#meetingForm').addEventListener('submit', async e => {
   } catch (err) { toast(err.message, 'error'); }
 });
 
+// ── People and knowledge library ─────────────────────────────────────────────
+$('#addPerson').addEventListener('click', () => $('#personDialog').showModal());
+$('#cancelPerson').addEventListener('click', () => $('#personDialog').close());
+$('#personForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  try {
+    await api('/api/users', { method: 'POST', body: JSON.stringify({
+      name: f.get('name'), email: f.get('email'), role: f.get('role') || 'member',
+    }) });
+    e.target.reset(); $('#personDialog').close(); toast('Person added to the team directory.'); await loadResources();
+  } catch (err) { toast(err.message, 'error'); }
+});
+$('#addKnowledge').addEventListener('click', () => $('#knowledgeDialog').showModal());
+$('#cancelKnowledge').addEventListener('click', () => $('#knowledgeDialog').close());
+$('#knowledgeForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  try {
+    await api('/api/knowledge-documents', { method: 'POST', body: JSON.stringify({
+      title: f.get('title'), content: f.get('content'), source_type: f.get('source_type'),
+    }) });
+    e.target.reset(); $('#knowledgeDialog').close(); toast('Knowledge document saved.'); await loadResources();
+  } catch (err) { toast(err.message, 'error'); }
+});
+
 // ── Dashboard shortcuts ──────────────────────────────────────────────────────
 $('#quickAI').addEventListener('click', () => {
   const transcript = $('#transcript');
@@ -428,3 +529,4 @@ $('#quickRisks').addEventListener('click', () => {
 
 // ── Boot ───────────────────────────────────────────────────────────────────────
 load();
+loadResources();

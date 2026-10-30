@@ -9,6 +9,8 @@ DigiPlus prevents context from disappearing after a meeting or work handover. It
 - A review-before-save workflow: AI output is only saved as official data after approval.
 - Action-item status management (`open`, `in progress`, `blocked`, `completed`, `cancelled`) with a mandatory outcome when closing work.
 - Carry-forward links: unresolved work remains in the source meeting for audit history and is surfaced in the destination meeting for follow-up.
+- A shared People directory with meeting attendance and logged action-item reassignment.
+- A knowledge library for team documents, notes, emails, and chat context, with AI-generated meeting links and relevance notes.
 - AI catch-up briefs for colleagues who missed the meeting or are taking work over.
 - **Handover Risk Radar** (the special feature): one view for overdue, blocked, unassigned, and undated work—the gaps most likely to cause context loss.
 - Seeded demonstration data, responsive single-page UI, validation, error feedback, and structured JSON logs.
@@ -66,7 +68,7 @@ The product does not fabricate dates or owners: the prompt requires the model to
 
 ## Data and lifecycle
 
-Key persisted tables are `meetings`, `meeting_transcripts`, `ai_runs`, `decisions`, `action_items`, `action_item_history`, and `action_item_carry_forwards`.
+Key persisted tables are `users`, `meeting_participants`, `meetings`, `meeting_transcripts`, `ai_runs`, `decisions`, `action_items`, `action_item_history`, `action_item_carry_forwards`, `knowledge_documents`, and `knowledge_links`.
 
 An action item is not copied when it is carried forward. A link records the destination meeting and optional reason; the item keeps its original identity and history. This avoids conflicting duplicates while making the next meeting accountable for follow-up.
 
@@ -74,14 +76,14 @@ An action item is not copied when it is carried forward. A link records the dest
 
 Logs are newline-delimited JSON in `logs/digiplus.log` (and INFO+ events on stdout). Each HTTP request receives a UUID correlation ID returned in `X-Correlation-ID`.
 
-Recorded events include request start/end/error, meeting create/update/delete, AI outcome and latency, proposal approval, task status changes/closure, and carry-forward operations. Logs deliberately omit secrets and raw notes/transcripts.
+Recorded events include request start/end/error, meeting create/update/delete, people/attendance updates, task reassignment and closure, AI outcome and latency, proposal approval, knowledge-link generation, and carry-forward operations. Logs deliberately omit secrets and raw notes/transcripts.
 
 ## Validation and known limitations
 
 - Title, meeting type, transcript size, task status, and close-out outcomes are validated at the API boundary.
 - This assessment version has no authentication or multi-tenant authorization; it is intended for a trusted demo team.
-- Pasted text is supported; file upload, calendar integration, and recording transcription are out of scope.
-- The knowledge base is represented by persisted historical meetings, approved decisions, and source transcripts. Dedicated document upload and semantic retrieval would be the next extension.
+- Pasted text is supported for meeting capture and knowledge documents; binary file upload, calendar integration, and recording transcription are out of scope.
+- Knowledge linking is AI-generated from saved document text. Embeddings and semantic search would be the next extension for a large library.
 - AI is synchronous for a concise assessment flow. In production, longer recordings should move the same `ai_runs` workflow to a background worker.
 
 ## Deployment

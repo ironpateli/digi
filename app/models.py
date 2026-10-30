@@ -107,3 +107,22 @@ class CarryForward(Base):
     to_meeting_id: Mapped[str] = mapped_column(ForeignKey("meetings.id"))
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class KnowledgeDocument(Base):
+    __tablename__ = "knowledge_documents"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    title: Mapped[str] = mapped_column(String(255))
+    content: Mapped[str] = mapped_column(Text)
+    source_type: Mapped[str] = mapped_column(String(30), default="team_document")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class KnowledgeLink(Base):
+    __tablename__ = "knowledge_links"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    document_id: Mapped[str] = mapped_column(ForeignKey("knowledge_documents.id"))
+    meeting_id: Mapped[str] = mapped_column(ForeignKey("meetings.id"))
+    relevance_note: Mapped[str] = mapped_column(Text)
+    created_by_ai: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

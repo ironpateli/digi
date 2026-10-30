@@ -1,3 +1,4 @@
+import json
 import re
 from groq import Groq
 from app.config import settings
@@ -37,6 +38,12 @@ Rules:
 _SYSTEM_BRIEF = """\
 You write concise, clear catch-up briefs for team members who missed meetings.
 Be direct and informative. No fluff. Max 200 words.
+"""
+
+_SYSTEM_KNOWLEDGE = """\
+You identify which knowledge documents are genuinely useful context for a meeting.
+Return JSON only in this form: {"links":[{"document_id":"...", "relevance":"short factual reason"}]}.
+Only link documents with a clear, specific relationship to the meeting. Never invent document IDs.
 """
 
 
@@ -109,3 +116,32 @@ def generate_catchup_brief(meeting: dict, target_name: str | None = None) -> str
         temperature=0.3,
     )
     return _strip_thinking(response.choices[0].message.content)
+
+
+def link_knowledge(meeting: dict, documents: list[dict]) -> list[dict]:
+    """Ask the model to identify relevant team knowledge; only known IDs are returned."""
+    c = _client()
+    sources = "\n\n".join(
+        f"ID: {d['id']}\nTitle: {d['title']}\nContent: {d['content'][:4000]}"
+        for d in documents
+    )
+    context = (
+        f"Meeting title: {meeting['title']}\nAgenda: {meeting.get('agenda') or 'N/A'}\n"
+        f"Notes: {meeting.get('manual_notes') or 'N/A'}\nSummary: {meeting.get('approved_summary') or 'N/A'}"
+    )
+    response = c.chat.completions.create(
+        model="qwen/qwen3.8-27b",
+        messages=[
+            {"role": "system", "content": _SYSTEM_KNOWLEDGE},
+            {"role": "user", "content": f"Meeting:\n{context}\n\nDocuments:\n{sources}"},
+        ],
+        temperature=0,
+        response_format={"type": "json_object"},
+    )
+    parsed = json.loads(_strip_thinking(response.choices[0].message.content))
+    valid_ids = {d["id"] for d in documents}
+    return [
+        {"document_id": item["document_id"], "relevance": str(item.get("relevance", "Relevant meeting context"))[:500]}
+        for item in parsed.get("links", [])
+        if isinstance(item, dict) and item.get("document_id") in valid_ids
+    ]

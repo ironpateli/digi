@@ -15,6 +15,17 @@ class MeetingCreate(BaseModel):
     manual_notes: str | None = None
 
 
+class UserCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=150)
+    email: str = Field(min_length=3, max_length=255)
+    role: str = Field(default="member", max_length=50)
+
+
+class ParticipantCreate(BaseModel):
+    user_id: str
+    attendance_status: str = "invited"
+
+
 class MeetingUpdate(BaseModel):
     agenda: str | None = None
     manual_notes: str | None = None
@@ -25,8 +36,9 @@ class TranscriptCreate(BaseModel):
 
 
 class TaskUpdate(BaseModel):
-    status: str
+    status: str | None = None
     outcome: str | None = None
+    owner_name: str | None = None
 
 
 class CarryCreate(BaseModel):
@@ -36,6 +48,12 @@ class CarryCreate(BaseModel):
 
 class CatchupCreate(BaseModel):
     target_name: str | None = None
+
+
+class KnowledgeDocumentCreate(BaseModel):
+    title: str = Field(min_length=3, max_length=255)
+    content: str = Field(min_length=20, max_length=100000)
+    source_type: str = "team_document"
 
 
 class AIAction(StrictModel):
