@@ -3,123 +3,131 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1.0">
-  <title>DigiPlus</title>
+  <meta name="theme-color" content="#0a1020">
+  <title>DigiPlus — Context, carried forward</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#top" aria-label="DigiPlus dashboard">
+        <span class="brand-mark">D+</span>
+        <span><b>DigiPlus</b><small>Team continuity</small></span>
+      </a>
 
-<header>
-  <div>
-    <p class="eyebrow">DIGIPLUS</p>
-    <h1>Context that survives the meeting.</h1>
-  </div>
-  <button id="newMeeting" class="btn-primary">+ New meeting</button>
-</header>
+      <nav class="side-nav" aria-label="Workspace navigation">
+        <a class="nav-item active" href="#top"><span>▦</span> Overview</a>
+        <a class="nav-item" href="#meetings"><span>◫</span> Meetings</a>
+        <a class="nav-item" href="#risks"><span>⌁</span> Risk radar <em id="sideRiskCount">0</em></a>
+      </nav>
 
-<main>
-  <section class="stats">
-    <div><span>Open action items</span><strong id="openCount">0</strong></div>
-    <div class="radar-stat" id="radarStat">
-      <span>⚡ Risk Radar</span>
-      <strong id="radarCount">—</strong>
-      <button class="btn-sm" id="radarToggle">View risks</button>
-    </div>
-  </section>
-
-  <!-- Risk Radar panel -->
-  <div id="radarPanel" class="radar-panel hidden"></div>
-
-  <section class="layout">
-    <aside>
-      <h2>Meetings &amp; handovers</h2>
-      <div id="meetingList"></div>
-    </aside>
-    <article id="detail">
-      <div class="empty">
-        <h2>Select a meeting</h2>
-        <p>Explore the seeded sample data or create a meeting and use AI to structure its transcript.</p>
+      <div class="sidebar-bottom">
+        <div class="sidebar-tip">
+          <span class="tip-icon">✦</span>
+          <div><b>AI-assisted</b><p>Proposals are always reviewed before saving.</p></div>
+        </div>
+        <button id="newMeeting" class="btn btn-primary btn-full">＋ New meeting</button>
       </div>
-    </article>
-  </section>
-</main>
+    </aside>
 
-<!-- ── Create meeting dialog ── -->
-<dialog id="meetingDialog">
-  <form id="meetingForm">
-    <h2>New meeting</h2>
+    <main id="top" class="workspace">
+      <header class="topbar">
+        <div class="crumb"><span class="presence"></span> Team workspace <span>/</span> Overview</div>
+        <button id="newMeetingTop" class="btn btn-primary">＋ New meeting</button>
+      </header>
+
+      <section class="welcome">
+        <div>
+          <p class="eyebrow">CONTINUITY HUB</p>
+          <h1>Context that survives the meeting.</h1>
+          <p class="welcome-copy">Capture decisions, keep ownership clear, and make every handover feel like a continuation—not a restart.</p>
+        </div>
+        <div class="quick-actions" aria-label="Quick actions">
+          <button class="quick-action" id="quickAI"><span class="quick-icon violet">✦</span><span><b>AI recap</b><small>Structure raw notes</small></span></button>
+          <button class="quick-action" id="quickBrief"><span class="quick-icon blue">↗</span><span><b>Catch-up brief</b><small>Bring someone up to speed</small></span></button>
+          <button class="quick-action" id="quickRisks"><span class="quick-icon amber">⌁</span><span><b>Risk radar</b><small>Resolve dropped context</small></span></button>
+        </div>
+      </section>
+
+      <section class="metrics" aria-label="Team status">
+        <article class="metric-card">
+          <div class="metric-top"><span>Open action items</span><span class="metric-icon blue">✓</span></div>
+          <strong id="openCount">0</strong>
+          <p>Work that still needs a recorded outcome</p>
+        </article>
+        <article class="metric-card risk-card">
+          <div class="metric-top"><span>Attention needed</span><span class="metric-icon amber">!</span></div>
+          <strong id="radarCount">—</strong>
+          <p id="riskCaption">Checking task health…</p>
+        </article>
+        <article class="metric-card">
+          <div class="metric-top"><span>Meeting records</span><span class="metric-icon mint">◫</span></div>
+          <strong id="meetingCount">0</strong>
+          <p><span id="approvedCount">0</span> recaps approved and retained</p>
+        </article>
+      </section>
+
+      <section id="risks" class="radar-wrap">
+        <div class="section-title-row">
+          <div><p class="section-kicker">HANDOVER RISK RADAR</p><h2>Nothing important should fall through.</h2></div>
+          <button class="btn btn-secondary" id="radarToggle">Show risk details</button>
+        </div>
+        <div id="radarPanel" class="radar-panel hidden"></div>
+      </section>
+
+      <section id="meetings" class="content-grid">
+        <aside class="meeting-pane">
+          <div class="pane-head">
+            <div><p class="section-kicker">RECORDS</p><h2>Meetings &amp; handovers</h2></div>
+            <button class="icon-button" id="newMeetingSmall" aria-label="Create meeting">＋</button>
+          </div>
+          <div id="meetingList" class="meeting-list"></div>
+        </aside>
+
+        <article id="detail" class="detail-pane">
+          <div class="empty-state">
+            <div class="empty-orb">D+</div>
+            <h2>Select a record</h2>
+            <p>Open a meeting to review decisions, manage action items, generate an AI recap, or create a catch-up brief.</p>
+            <button class="btn btn-primary" id="emptyCreate">Create your first meeting</button>
+          </div>
+        </article>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="meetingDialog"><form id="meetingForm">
+    <p class="dialog-kicker">NEW RECORD</p><h2>Create a meeting</h2><p class="dialog-hint">Start with the context your team needs to retain.</p>
     <label>Title <input name="title" required minlength="3" placeholder="Weekly product sync"></label>
-    <label>Type
-      <select name="type">
-        <option value="meeting">Meeting</option>
-        <option value="handover">Handover</option>
-        <option value="work_transfer">Work transfer</option>
-      </select>
-    </label>
+    <label>Type <select name="type"><option value="meeting">Meeting</option><option value="handover">Handover</option><option value="work_transfer">Work transfer</option></select></label>
     <label>When <input name="scheduled_at" type="datetime-local" required></label>
     <label>Agenda <textarea name="agenda" rows="3" placeholder="What should be covered?"></textarea></label>
-    <menu>
-      <button type="button" id="cancelMeeting">Cancel</button>
-      <button type="submit" class="btn-primary">Create</button>
-    </menu>
-  </form>
-</dialog>
+    <menu><button type="button" class="btn btn-secondary" id="cancelMeeting">Cancel</button><button type="submit" class="btn btn-primary">Create meeting</button></menu>
+  </form></dialog>
 
-<!-- ── Edit notes dialog ── -->
-<dialog id="editNotesDialog">
-  <form id="editNotesForm">
-    <h2>Edit notes</h2>
+  <dialog id="editNotesDialog"><form id="editNotesForm">
+    <p class="dialog-kicker">MEETING CONTEXT</p><h2>Edit notes</h2>
     <label>Agenda <textarea id="editAgenda" rows="3" placeholder="What should be covered?"></textarea></label>
-    <label>Manual notes <textarea id="editNotes" rows="5" placeholder="Notes from the meeting…"></textarea></label>
-    <menu>
-      <button type="button" id="cancelEditNotes">Cancel</button>
-      <button type="submit" class="btn-primary">Save changes</button>
-    </menu>
-  </form>
-</dialog>
+    <label>Manual notes <textarea id="editNotes" rows="6" placeholder="Notes from the meeting…"></textarea></label>
+    <menu><button type="button" class="btn btn-secondary" id="cancelEditNotes">Cancel</button><button type="submit" class="btn btn-primary">Save changes</button></menu>
+  </form></dialog>
 
-<!-- ── Carry forward dialog ── -->
-<dialog id="carryDialog">
-  <form id="carryForm">
-    <h2>↗ Carry task forward</h2>
-    <p class="dialog-hint">The task stays in this meeting's history and is linked to the new meeting for follow-up.</p>
+  <dialog id="carryDialog"><form id="carryForm">
+    <p class="dialog-kicker">CONTINUITY</p><h2>Carry task forward</h2><p class="dialog-hint">The item keeps its complete history and is surfaced in the next record.</p>
     <label>Target meeting <select id="carryMeetingSelect"></select></label>
-    <label>Note (optional) <input id="carryNote" placeholder="Why is this being carried forward?"></label>
-    <menu>
-      <button type="button" id="cancelCarry">Cancel</button>
-      <button type="submit" class="btn-primary">Carry forward</button>
-    </menu>
-  </form>
-</dialog>
+    <label>Follow-up note <input id="carryNote" placeholder="Why is this being carried forward?"></label>
+    <menu><button type="button" class="btn btn-secondary" id="cancelCarry">Cancel</button><button type="submit" class="btn btn-primary">Carry forward</button></menu>
+  </form></dialog>
 
-<!-- ── Catch-up brief dialog ── -->
-<dialog id="briefDialog">
-  <div id="briefContent">
-    <h2>📋 Catch-up brief</h2>
-    <label>Who missed the meeting? (optional)
-      <input id="briefTargetName" placeholder="e.g. Rahul">
-    </label>
+  <dialog id="briefDialog"><div id="briefContent">
+    <p class="dialog-kicker">AI CATCH-UP</p><h2>Catch-up brief</h2><p class="dialog-hint">A concise, shareable recap of the context someone missed.</p>
+    <label>Who missed the meeting? <input id="briefTargetName" placeholder="e.g. Rahul (optional)"></label>
     <div id="briefResult"></div>
-    <menu>
-      <button type="button" id="cancelBrief">Close</button>
-      <button type="button" class="btn-primary" id="generateBriefBtn">Generate brief</button>
-    </menu>
-  </div>
-</dialog>
+    <menu><button type="button" class="btn btn-secondary" id="cancelBrief">Close</button><button type="button" class="btn btn-primary" id="generateBriefBtn">Generate brief</button></menu>
+  </div></dialog>
 
-<!-- ── Confirm delete dialog ── -->
-<dialog id="confirmDialog">
-  <div class="confirm-box">
-    <p id="confirmMsg"></p>
-    <menu>
-      <button type="button" id="confirmNo">Cancel</button>
-      <button type="button" id="confirmYes" class="btn-danger">Delete</button>
-    </menu>
-  </div>
-</dialog>
-
-<!-- Toast container -->
-<div id="toastContainer"></div>
-
-<script src="/static/app.js"></script>
+  <dialog id="confirmDialog"><div class="confirm-box"><p id="confirmMsg"></p><menu><button type="button" class="btn btn-secondary" id="confirmNo">Cancel</button><button type="button" id="confirmYes" class="btn btn-danger">Delete</button></menu></div></dialog>
+  <div id="toastContainer"></div>
+  <script src="/static/app.js"></script>
 </body>
 </html>

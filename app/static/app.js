@@ -50,8 +50,9 @@ async function loadRadar() {
     const d = await api('/api/risk-radar');
     const count = d.total_risks;
     $('#radarCount').textContent = count;
-    $('#radarCount').className   = count > 0 ? 'risk-count risk-hot' : 'risk-count';
-    $('#radarToggle').textContent = count > 0 ? `View ${count} risk${count !== 1 ? 's' : ''}` : 'All clear ✓';
+    $('#sideRiskCount').textContent = count;
+    $('#riskCaption').textContent = count ? `${count} item${count !== 1 ? 's' : ''} need follow-up` : 'Every open item is on track';
+    $('#radarToggle').textContent = count > 0 ? `Show ${count} risk${count !== 1 ? 's' : ''}` : 'All clear ✓';
 
     if (count === 0) {
       $('#radarPanel').innerHTML = '<p class="radar-clear">✅ No risks detected — all tasks are assigned, on track, and have due dates.</p>';
@@ -92,6 +93,8 @@ async function load() {
     const d = await api('/api/dashboard');
     allMeetings = d.meetings;
     $('#openCount').textContent = d.open_tasks;
+    $('#meetingCount').textContent = d.meetings.length;
+    $('#approvedCount').textContent = d.meetings.filter(m => m.status === 'completed').length;
     $('#meetingList').innerHTML = d.meetings.length
       ? d.meetings.map(m => `
           <button class="meeting ${m.id === currentId ? 'active' : ''}" data-id="${m.id}">
@@ -388,7 +391,9 @@ async function approve(runId) {
 }
 
 // ── New meeting ────────────────────────────────────────────────────────────────
-$('#newMeeting').addEventListener('click', () => $('#meetingDialog').showModal());
+['#newMeeting', '#newMeetingTop', '#newMeetingSmall', '#emptyCreate'].forEach(selector => {
+  $(selector)?.addEventListener('click', () => $('#meetingDialog').showModal());
+});
 $('#cancelMeeting').addEventListener('click', () => { $('#meetingDialog').close(); $('#meetingForm').reset(); });
 $('#meetingForm').addEventListener('submit', async e => {
   e.preventDefault();
@@ -402,6 +407,23 @@ $('#meetingForm').addEventListener('submit', async e => {
     toast('Meeting created!');
     currentId = m.id; currentMeeting = m; load();
   } catch (err) { toast(err.message, 'error'); }
+});
+
+// ── Dashboard shortcuts ──────────────────────────────────────────────────────
+$('#quickAI').addEventListener('click', () => {
+  const transcript = $('#transcript');
+  if (!transcript) { toast('Select a meeting first, then add your raw notes.', 'warn'); return; }
+  transcript.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  transcript.focus();
+});
+$('#quickBrief').addEventListener('click', () => {
+  if (!currentMeeting) { toast('Select a meeting first to create a catch-up brief.', 'warn'); return; }
+  openCatchupBrief();
+});
+$('#quickRisks').addEventListener('click', () => {
+  radarOpen = true;
+  $('#radarPanel').classList.remove('hidden');
+  $('#risks').scrollIntoView({ behavior: 'smooth', block: 'start' });
 });
 
 // ── Boot ───────────────────────────────────────────────────────────────────────
