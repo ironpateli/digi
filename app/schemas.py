@@ -15,6 +15,11 @@ class MeetingCreate(BaseModel):
     manual_notes: str | None = None
 
 
+class MeetingUpdate(BaseModel):
+    agenda: str | None = None
+    manual_notes: str | None = None
+
+
 class TranscriptCreate(BaseModel):
     content: str = Field(min_length=20, max_length=100000)
 
@@ -29,9 +34,8 @@ class CarryCreate(BaseModel):
     note: str | None = None
 
 
-class MeetingUpdate(BaseModel):
-    agenda: str | None = None
-    manual_notes: str | None = None
+class CatchupCreate(BaseModel):
+    target_name: str | None = None
 
 
 class AIAction(StrictModel):

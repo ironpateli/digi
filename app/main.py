@@ -1,147 +1,160 @@
 import time
-from datetime import date, datetime
+import uuid
+from datetime import date as date_type, datetime
 from pathlib import Path
-from fastapi import Depends, FastAPI, HTTPException, Response
+
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select, func, delete as sql_delete
 from sqlalchemy.orm import Session
-from app.ai import extract_recap
-from app.db import Base, engine, get_db
-from app.models import AIRun, ActionHistory, ActionItem, CarryForward, Decision, Meeting, Participant, Transcript
-from app.schemas import CarryCreate, MeetingCreate, MeetingUpdate, TaskUpdate, TranscriptCreate
 
+from app.ai import extract_recap, generate_catchup_brief
+from app.db import Base, engine, get_db
+from app.logger import log, correlation_id_var
+from app.models import (
+    AIRun, ActionHistory, ActionItem, CarryForward,
+    Decision, Meeting, Participant, Transcript,
+)
+from app.schemas import (
+    CarryCreate, CatchupCreate, MeetingCreate, MeetingUpdate,
+    TaskUpdate, TranscriptCreate,
+)
+
+# ── App setup ──────────────────────────────────────────────────────────────────
 Base.metadata.create_all(bind=engine)
 app = FastAPI(title="DigiPlus")
 static_dir = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 
-def meeting_payload(db: Session, meeting: Meeting):
-    tasks = db.scalars(select(ActionItem).where(ActionItem.meeting_id == meeting.id).order_by(ActionItem.created_at.desc())).all()
-    decisions = db.scalars(select(Decision).where(Decision.meeting_id == meeting.id)).all()
-    transcripts = db.scalars(select(Transcript).where(Transcript.meeting_id == meeting.id).order_by(Transcript.created_at.desc())).all()
+# ── Middleware: correlation ID + request logging ───────────────────────────────
+@app.middleware("http")
+async def request_logging(request: Request, call_next):
+    cid = str(uuid.uuid4())
+    correlation_id_var.set(cid)
+    log.info(
+        "request_start",
+        extra={"event": "request_start", "correlation_id": cid,
+               "method": request.method, "path": request.url.path},
+    )
+    t0 = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        # Keep the request ID with unexpected failures, without including the
+        # request body (which may contain private meeting notes) in the log.
+        log.exception(
+            "request_failed",
+            extra={"event": "request_failed", "correlation_id": cid,
+                   "method": request.method, "path": request.url.path},
+        )
+        raise
+    latency = int((time.perf_counter() - t0) * 1000)
+    log.info(
+        "request_end",
+        extra={"event": "request_end", "correlation_id": cid,
+               "status": response.status_code, "latency_ms": latency},
+    )
+    response.headers["X-Correlation-ID"] = cid
+    return response
+
+
+# ── Shared helpers ─────────────────────────────────────────────────────────────
+def _task_dict(t: ActionItem) -> dict:
     return {
-        "id": meeting.id, "title": meeting.title, "type": meeting.type, "status": meeting.status,
-        "scheduled_at": meeting.scheduled_at.isoformat(), "timezone": meeting.timezone, "agenda": meeting.agenda,
-        "manual_notes": meeting.manual_notes, "approved_summary": meeting.approved_summary,
-        "tasks": [{"id": x.id, "title": x.title, "description": x.description, "owner_name": x.owner_name,
-                   "due_date": x.due_date.isoformat() if x.due_date else None, "status": x.status,
-                   "priority": x.priority, "outcome": x.outcome} for x in tasks],
-        "decisions": [{"id": x.id, "title": x.title, "description": x.description, "rationale": x.rationale} for x in decisions],
+        "id": t.id, "title": t.title, "description": t.description,
+        "owner_name": t.owner_name,
+        "due_date": t.due_date.isoformat() if t.due_date else None,
+        "status": t.status, "priority": t.priority, "outcome": t.outcome,
+    }
+
+
+def meeting_payload(db: Session, meeting: Meeting) -> dict:
+    tasks      = db.scalars(select(ActionItem).where(ActionItem.meeting_id == meeting.id).order_by(ActionItem.created_at.desc())).all()
+    decisions  = db.scalars(select(Decision).where(Decision.meeting_id == meeting.id)).all()
+    transcripts = db.scalars(select(Transcript).where(Transcript.meeting_id == meeting.id)).all()
+    carries = db.scalars(
+        select(CarryForward).where(CarryForward.to_meeting_id == meeting.id)
+        .order_by(CarryForward.created_at.desc())
+    ).all()
+    carried_items = []
+    for carry in carries:
+        item = db.get(ActionItem, carry.action_item_id)
+        if item:
+            item_data = _task_dict(item)
+            item_data.update({"carried_from_meeting_id": item.meeting_id, "carry_note": carry.note})
+            carried_items.append(item_data)
+    return {
+        "id": meeting.id, "title": meeting.title, "type": meeting.type,
+        "status": meeting.status,
+        "scheduled_at": meeting.scheduled_at.isoformat(),
+        "timezone": meeting.timezone,
+        "agenda": meeting.agenda, "manual_notes": meeting.manual_notes,
+        "approved_summary": meeting.approved_summary,
+        "tasks":     [_task_dict(t) for t in tasks],
+        # A carried item remains owned by its original meeting so its full
+        # audit history is intact; this projection makes it actionable in the
+        # next meeting as well.
+        "carried_forward_items": carried_items,
+        "decisions": [{"id": d.id, "title": d.title, "description": d.description, "rationale": d.rationale} for d in decisions],
         "transcript_count": len(transcripts),
     }
 
 
+# ── Health ─────────────────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 
+# ── Dashboard ──────────────────────────────────────────────────────────────────
 @app.get("/api/dashboard")
 def dashboard(db: Session = Depends(get_db)):
-    meetings = db.scalars(select(Meeting).order_by(Meeting.scheduled_at.desc())).all()
-    open_count = db.scalar(select(func.count()).select_from(ActionItem).where(ActionItem.status.not_in(["completed", "cancelled"]))) or 0
+    meetings   = db.scalars(select(Meeting).order_by(Meeting.scheduled_at.desc())).all()
+    open_count = db.scalar(
+        select(func.count()).select_from(ActionItem)
+        .where(ActionItem.status.not_in(["completed", "cancelled"]))
+    ) or 0
     return {"meetings": [meeting_payload(db, m) for m in meetings], "open_tasks": open_count}
 
 
+# ── Meetings ───────────────────────────────────────────────────────────────────
 @app.post("/api/meetings", status_code=201)
 def create_meeting(data: MeetingCreate, db: Session = Depends(get_db)):
     if data.type not in {"meeting", "handover", "work_transfer"}:
         raise HTTPException(422, "Invalid meeting type")
     meeting = Meeting(**data.model_dump())
     db.add(meeting); db.commit(); db.refresh(meeting)
+    log.info("meeting_created", extra={"event": "meeting_created", "meeting_id": meeting.id, "type": meeting.type})
     return meeting_payload(db, meeting)
 
 
 @app.get("/api/meetings/{meeting_id}")
 def get_meeting(meeting_id: str, db: Session = Depends(get_db)):
     meeting = db.get(Meeting, meeting_id)
-    if not meeting: raise HTTPException(404, "Meeting not found")
+    if not meeting:
+        raise HTTPException(404, "Meeting not found")
     return meeting_payload(db, meeting)
-
-
-@app.post("/api/meetings/{meeting_id}/transcripts")
-def process_transcript(meeting_id: str, data: TranscriptCreate, db: Session = Depends(get_db)):
-    meeting = db.get(Meeting, meeting_id)
-    if not meeting: raise HTTPException(404, "Meeting not found")
-    transcript = Transcript(meeting_id=meeting.id, content=data.content)
-    db.add(transcript); db.flush()
-    run = AIRun(meeting_id=meeting.id, transcript_id=transcript.id)
-    db.add(run); db.commit(); db.refresh(run)
-    started = time.perf_counter()
-    try:
-        result = extract_recap(data.content)
-        run.output_json, run.status = result, "review_required"
-        run.latency_ms = int((time.perf_counter() - started) * 1000)
-        meeting.status = "review_required"
-        db.commit()
-        return {"run_id": run.id, "status": run.status, "proposal": result}
-    except Exception as exc:
-        run.status, run.error_message = "failed", str(exc)[:1000]
-        run.latency_ms = int((time.perf_counter() - started) * 1000)
-        meeting.status = "failed"
-        db.commit()
-        raise HTTPException(502, f"AI extraction failed: {run.error_message}")
-
-
-@app.post("/api/ai-runs/{run_id}/approve")
-def approve_ai_run(run_id: str, db: Session = Depends(get_db)):
-    run = db.get(AIRun, run_id)
-    if not run or not run.output_json: raise HTTPException(404, "AI proposal not found")
-    if run.status == "approved": return {"status": "approved"}
-    proposal = run.output_json
-    meeting = db.get(Meeting, run.meeting_id)
-    meeting.approved_summary = proposal["summary"]
-    for item in proposal.get("decisions", []):
-        db.add(Decision(meeting_id=meeting.id, title=item["title"], description=item["description"], rationale=item.get("rationale"), created_by_ai=True))
-    for item in proposal.get("action_items", []):
-        due_date = date.fromisoformat(item["due_date"]) if item.get("due_date") else None
-        action = ActionItem(meeting_id=meeting.id, title=item["title"], description=item.get("description"), owner_name=item.get("owner"), due_date=due_date, priority=item.get("priority", "medium"), created_by_ai=True)
-        db.add(action); db.flush(); db.add(ActionHistory(action_item_id=action.id, event_type="approved_from_ai", detail="Approved from AI recap"))
-    run.status, meeting.status = "approved", "completed"
-    db.commit()
-    return meeting_payload(db, meeting)
-
-
-@app.patch("/api/tasks/{task_id}")
-def update_task(task_id: str, data: TaskUpdate, db: Session = Depends(get_db)):
-    task = db.get(ActionItem, task_id)
-    if not task: raise HTTPException(404, "Task not found")
-    if data.status not in {"open", "in_progress", "blocked", "completed", "cancelled"}: raise HTTPException(422, "Invalid status")
-    if data.status in {"completed", "cancelled"} and not data.outcome: raise HTTPException(422, "An outcome is required when closing a task")
-    old = task.status; task.status = data.status
-    if data.outcome: task.outcome = data.outcome
-    db.add(ActionHistory(action_item_id=task.id, event_type="status_changed", detail=f"{old} -> {task.status}"))
-    db.commit()
-    return {"id": task.id, "status": task.status, "outcome": task.outcome}
-
-
-@app.post("/api/tasks/{task_id}/carry-forward")
-def carry_forward(task_id: str, data: CarryCreate, db: Session = Depends(get_db)):
-    task, target = db.get(ActionItem, task_id), db.get(Meeting, data.to_meeting_id)
-    if not task or not target: raise HTTPException(404, "Task or target meeting not found")
-    if task.status in {"completed", "cancelled"}: raise HTTPException(422, "Only open tasks can be carried forward")
-    db.add(CarryForward(action_item_id=task.id, to_meeting_id=target.id, note=data.note))
-    db.add(ActionHistory(action_item_id=task.id, event_type="carried_forward", detail=f"Carried to {target.title}"))
-    db.commit()
-    return {"status": "carried_forward"}
 
 
 @app.patch("/api/meetings/{meeting_id}")
 def update_meeting(meeting_id: str, data: MeetingUpdate, db: Session = Depends(get_db)):
     meeting = db.get(Meeting, meeting_id)
-    if not meeting: raise HTTPException(404, "Meeting not found")
+    if not meeting:
+        raise HTTPException(404, "Meeting not found")
     for field, value in data.model_dump(exclude_unset=True).items():
         setattr(meeting, field, value or None)
     db.commit()
+    log.info("meeting_updated", extra={"event": "meeting_updated", "meeting_id": meeting_id})
     return meeting_payload(db, meeting)
 
 
 @app.delete("/api/meetings/{meeting_id}", status_code=204)
 def delete_meeting(meeting_id: str, db: Session = Depends(get_db)):
     meeting = db.get(Meeting, meeting_id)
-    if not meeting: raise HTTPException(404, "Meeting not found")
+    if not meeting:
+        raise HTTPException(404, "Meeting not found")
     items = db.scalars(select(ActionItem).where(ActionItem.meeting_id == meeting_id)).all()
     for item in items:
         db.execute(sql_delete(ActionHistory).where(ActionHistory.action_item_id == item.id))
@@ -154,9 +167,204 @@ def delete_meeting(meeting_id: str, db: Session = Depends(get_db)):
     db.execute(sql_delete(Participant).where(Participant.meeting_id == meeting_id))
     db.delete(meeting)
     db.commit()
+    log.info("meeting_deleted", extra={"event": "meeting_deleted", "meeting_id": meeting_id})
     return Response(status_code=204)
 
 
+# ── Transcripts + AI extraction ────────────────────────────────────────────────
+@app.post("/api/meetings/{meeting_id}/transcripts")
+def process_transcript(meeting_id: str, data: TranscriptCreate, db: Session = Depends(get_db)):
+    meeting = db.get(Meeting, meeting_id)
+    if not meeting:
+        raise HTTPException(404, "Meeting not found")
+    transcript = Transcript(meeting_id=meeting.id, content=data.content)
+    db.add(transcript); db.flush()
+    run = AIRun(meeting_id=meeting.id, transcript_id=transcript.id)
+    db.add(run); db.commit(); db.refresh(run)
+    t0 = time.perf_counter()
+    try:
+        result = extract_recap(data.content)
+        latency = int((time.perf_counter() - t0) * 1000)
+        run.output_json, run.status, run.latency_ms = result, "review_required", latency
+        meeting.status = "review_required"
+        db.commit()
+        log.info("ai_extraction_success", extra={
+            "event": "ai_extraction", "meeting_id": meeting_id,
+            "run_id": run.id, "latency_ms": latency, "status": "succeeded",
+            "model": "qwen/qwen3.8-27b",
+        })
+        return {"run_id": run.id, "status": run.status, "proposal": result}
+    except Exception as exc:
+        latency = int((time.perf_counter() - t0) * 1000)
+        run.status, run.error_message, run.latency_ms = "failed", str(exc)[:1000], latency
+        meeting.status = "failed"
+        db.commit()
+        log.error("ai_extraction_failed", extra={
+            "event": "ai_extraction", "meeting_id": meeting_id,
+            "run_id": run.id, "latency_ms": latency, "status": "failed",
+            "error": str(exc)[:200],
+        })
+        raise HTTPException(502, f"AI extraction failed: {run.error_message}")
+
+
+# ── AI run approval ────────────────────────────────────────────────────────────
+@app.post("/api/ai-runs/{run_id}/approve")
+def approve_ai_run(run_id: str, db: Session = Depends(get_db)):
+    run = db.get(AIRun, run_id)
+    if not run or not run.output_json:
+        raise HTTPException(404, "AI proposal not found")
+    if run.status == "approved":
+        return {"status": "approved"}
+    proposal = run.output_json
+    meeting  = db.get(Meeting, run.meeting_id)
+    meeting.approved_summary = proposal["summary"]
+    for item in proposal.get("decisions", []):
+        db.add(Decision(meeting_id=meeting.id, title=item["title"],
+                        description=item["description"], rationale=item.get("rationale"),
+                        created_by_ai=True))
+    for item in proposal.get("action_items", []):
+        due = date_type.fromisoformat(item["due_date"]) if item.get("due_date") else None
+        action = ActionItem(
+            meeting_id=meeting.id, title=item["title"],
+            description=item.get("description"), owner_name=item.get("owner"),
+            due_date=due, priority=item.get("priority", "medium"), created_by_ai=True,
+        )
+        db.add(action); db.flush()
+        db.add(ActionHistory(action_item_id=action.id, event_type="approved_from_ai",
+                             detail="Approved from AI recap"))
+    run.status, meeting.status = "approved", "completed"
+    db.commit()
+    log.info("ai_run_approved", extra={"event": "ai_approved", "run_id": run_id, "meeting_id": run.meeting_id})
+    return meeting_payload(db, meeting)
+
+
+# ── Catch-up brief ─────────────────────────────────────────────────────────────
+@app.post("/api/meetings/{meeting_id}/catchup-brief")
+def catchup_brief(meeting_id: str, data: CatchupCreate, db: Session = Depends(get_db)):
+    meeting = db.get(Meeting, meeting_id)
+    if not meeting:
+        raise HTTPException(404, "Meeting not found")
+    payload = meeting_payload(db, meeting)
+    t0 = time.perf_counter()
+    try:
+        brief   = generate_catchup_brief(payload, data.target_name)
+        latency = int((time.perf_counter() - t0) * 1000)
+        log.info("catchup_brief_generated", extra={
+            "event": "catchup_brief", "meeting_id": meeting_id,
+            "latency_ms": latency, "status": "succeeded",
+        })
+        return {"brief": brief, "meeting_id": meeting_id}
+    except Exception as exc:
+        latency = int((time.perf_counter() - t0) * 1000)
+        log.error("catchup_brief_failed", extra={
+            "event": "catchup_brief", "meeting_id": meeting_id,
+            "latency_ms": latency, "error": str(exc)[:200],
+        })
+        raise HTTPException(502, f"Brief generation failed: {str(exc)[:200]}")
+
+
+# ── Tasks ──────────────────────────────────────────────────────────────────────
+@app.patch("/api/tasks/{task_id}")
+def update_task(task_id: str, data: TaskUpdate, db: Session = Depends(get_db)):
+    task = db.get(ActionItem, task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    if data.status not in {"open", "in_progress", "blocked", "completed", "cancelled"}:
+        raise HTTPException(422, "Invalid status")
+    if data.status in {"completed", "cancelled"} and not data.outcome:
+        raise HTTPException(422, "An outcome is required when closing a task")
+    old = task.status
+    task.status = data.status
+    if data.outcome:
+        task.outcome = data.outcome
+    db.add(ActionHistory(action_item_id=task.id, event_type="status_changed",
+                         detail=f"{old} -> {task.status}"))
+    db.commit()
+    log.info("task_status_changed", extra={
+        "event": "task_status_changed", "task_id": task_id,
+        "old_status": old, "new_status": task.status,
+    })
+    return _task_dict(task)
+
+
+@app.post("/api/tasks/{task_id}/carry-forward")
+def carry_forward(task_id: str, data: CarryCreate, db: Session = Depends(get_db)):
+    task   = db.get(ActionItem, task_id)
+    target = db.get(Meeting, data.to_meeting_id)
+    if not task or not target:
+        raise HTTPException(404, "Task or target meeting not found")
+    if task.status in {"completed", "cancelled"}:
+        raise HTTPException(422, "Only open tasks can be carried forward")
+    db.add(CarryForward(action_item_id=task.id, to_meeting_id=target.id, note=data.note))
+    db.add(ActionHistory(action_item_id=task.id, event_type="carried_forward",
+                         detail=f"Carried to {target.title}"))
+    db.commit()
+    log.info("task_carried_forward", extra={
+        "event": "task_carried_forward", "task_id": task_id,
+        "to_meeting_id": data.to_meeting_id,
+    })
+    return {"status": "carried_forward"}
+
+
+# ── Risk Radar (special feature) ───────────────────────────────────────────────
+@app.get("/api/risk-radar")
+def risk_radar(db: Session = Depends(get_db)):
+    """
+    Handover Risk Radar — surfaces unresolved risks that cause context loss.
+    Identifies: overdue tasks, missing owners, blocked items, tasks with no deadline.
+    """
+    today       = date_type.today()
+    open_states = ["open", "in_progress", "blocked"]
+
+    def _shape(t: ActionItem) -> dict:
+        m = db.get(Meeting, t.meeting_id)
+        return {
+            "id": t.id, "title": t.title,
+            "owner_name": t.owner_name,
+            "due_date": t.due_date.isoformat() if t.due_date else None,
+            "status": t.status, "priority": t.priority,
+            "meeting_id": t.meeting_id,
+            "meeting_title": m.title if m else None,
+        }
+
+    overdue  = db.scalars(select(ActionItem).where(
+        ActionItem.status.in_(open_states),
+        ActionItem.due_date < today,
+    )).all()
+
+    no_owner = db.scalars(select(ActionItem).where(
+        ActionItem.status.in_(open_states),
+        ActionItem.owner_name.is_(None),
+    )).all()
+
+    blocked  = db.scalars(select(ActionItem).where(
+        ActionItem.status == "blocked",
+    )).all()
+
+    no_due   = db.scalars(select(ActionItem).where(
+        ActionItem.status.in_(open_states),
+        ActionItem.due_date.is_(None),
+    )).all()
+
+    all_ids      = {t.id for t in overdue + no_owner + blocked + no_due}
+    total_risks  = len(all_ids)
+
+    log.info("risk_radar_computed", extra={
+        "event": "risk_radar", "total_risks": total_risks,
+        "overdue": len(overdue), "no_owner": len(no_owner),
+        "blocked": len(blocked), "no_due": len(no_due),
+    })
+
+    return {
+        "total_risks":  total_risks,
+        "overdue":      [_shape(t) for t in overdue],
+        "no_owner":     [_shape(t) for t in no_owner],
+        "blocked":      [_shape(t) for t in blocked],
+        "no_due_date":  [_shape(t) for t in no_due],
+    }
+
+
+# ── Frontend ───────────────────────────────────────────────────────────────────
 @app.get("/")
 def index():
     return FileResponse(static_dir / "index.html")

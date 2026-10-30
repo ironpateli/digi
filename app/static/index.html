@@ -19,8 +19,16 @@
 <main>
   <section class="stats">
     <div><span>Open action items</span><strong id="openCount">0</strong></div>
-    <div><span>How it works</span><strong>Paste → Extract → Review</strong></div>
+    <div class="radar-stat" id="radarStat">
+      <span>⚡ Risk Radar</span>
+      <strong id="radarCount">—</strong>
+      <button class="btn-sm" id="radarToggle">View risks</button>
+    </div>
   </section>
+
+  <!-- Risk Radar panel -->
+  <div id="radarPanel" class="radar-panel hidden"></div>
+
   <section class="layout">
     <aside>
       <h2>Meetings &amp; handovers</h2>
@@ -60,8 +68,8 @@
 <dialog id="editNotesDialog">
   <form id="editNotesForm">
     <h2>Edit notes</h2>
-    <label>Agenda <textarea id="editAgenda" name="agenda" rows="3" placeholder="What should be covered?"></textarea></label>
-    <label>Manual notes <textarea id="editNotes" name="manual_notes" rows="5" placeholder="Notes from the meeting…"></textarea></label>
+    <label>Agenda <textarea id="editAgenda" rows="3" placeholder="What should be covered?"></textarea></label>
+    <label>Manual notes <textarea id="editNotes" rows="5" placeholder="Notes from the meeting…"></textarea></label>
     <menu>
       <button type="button" id="cancelEditNotes">Cancel</button>
       <button type="submit" class="btn-primary">Save changes</button>
@@ -73,7 +81,7 @@
 <dialog id="carryDialog">
   <form id="carryForm">
     <h2>↗ Carry task forward</h2>
-    <p class="dialog-hint">The task stays in this meeting's history but is linked to the new meeting for follow-up.</p>
+    <p class="dialog-hint">The task stays in this meeting's history and is linked to the new meeting for follow-up.</p>
     <label>Target meeting <select id="carryMeetingSelect"></select></label>
     <label>Note (optional) <input id="carryNote" placeholder="Why is this being carried forward?"></label>
     <menu>
@@ -81,6 +89,21 @@
       <button type="submit" class="btn-primary">Carry forward</button>
     </menu>
   </form>
+</dialog>
+
+<!-- ── Catch-up brief dialog ── -->
+<dialog id="briefDialog">
+  <div id="briefContent">
+    <h2>📋 Catch-up brief</h2>
+    <label>Who missed the meeting? (optional)
+      <input id="briefTargetName" placeholder="e.g. Rahul">
+    </label>
+    <div id="briefResult"></div>
+    <menu>
+      <button type="button" id="cancelBrief">Close</button>
+      <button type="button" class="btn-primary" id="generateBriefBtn">Generate brief</button>
+    </menu>
+  </div>
 </dialog>
 
 <!-- ── Confirm delete dialog ── -->
