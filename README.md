@@ -195,12 +195,12 @@ Render web service
   - compiled React single-page app
     |
     +----> Render PostgreSQL
-    +----> OpenAI Responses API
+    +----> Groq API
 ```
 
 Use **Render** for one hosted FastAPI service, managed PostgreSQL, environment secrets, logs, and deployment from the Git repository. Package the React application in the same Docker image and let FastAPI serve the built static files. This gives the project one public URL and avoids CORS and multi-site deployment complexity.
 
-The application startup command will run database migrations, then an idempotent seed command that creates a demo team, two meetings, one handover, transcripts, approved tasks, and decisions when the database is empty. The deployed link is therefore useful as soon as it opens. The only required secrets are hosted environment variables such as `DATABASE_URL`, `OPENAI_API_KEY`, and `SECRET_KEY`; no secret is committed to Git.
+The application startup command will run database migrations, then an idempotent seed command that creates a demo team, two meetings, one handover, transcripts, approved tasks, and decisions when the database is empty. The deployed link is therefore useful as soon as it opens. The only required secrets are hosted environment variables such as `DATABASE_URL`, `GROQ_API_KEY`, and `SECRET_KEY`; no secret is committed to Git.
 
 The first version accepts pasted transcripts and notes only. File upload and object storage are deferred until they are genuinely needed.
 
@@ -234,7 +234,7 @@ AIService interface
   - link_knowledge(context)
 ```
 
-Start with the **OpenAI Responses API** and a model that supports structured outputs. Require JSON Schema output, validate it again on the server, record provider/model/prompt version in `ai_runs`, and have a clear retry/manual fallback. The Responses API is the current API for new integrations; the prior Assistants API has been sunset. See the [official OpenAI migration guidance](https://platform.openai.com/playground?assistant=asst_MLZgVy7CSjBGoFkwY9RmX9os&mode=assistant).
+Start with the **Groq Free tier** and `openai/gpt-oss-20b`. Groq is fast, offers an OpenAI-compatible API, and supports strict JSON-schema output with this model. Require JSON Schema output, validate it again on the server, record provider/model/prompt version in `ai_runs`, and have a clear retry/manual fallback. If the free-tier quota is exhausted, the application shows a retry/manual-entry path rather than failing silently.
 
 The AI provider remains behind an `AIService` interface so a future provider/model change does not affect API routes, database records, or the frontend.
 
