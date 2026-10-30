@@ -29,6 +29,11 @@ class CarryCreate(BaseModel):
     note: str | None = None
 
 
+class MeetingUpdate(BaseModel):
+    agenda: str | None = None
+    manual_notes: str | None = None
+
+
 class AIAction(StrictModel):
     title: str
     description: str | None

@@ -1,15 +1,15 @@
 import time
 from datetime import date, datetime
 from pathlib import Path
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete as sql_delete
 from sqlalchemy.orm import Session
 from app.ai import extract_recap
 from app.db import Base, engine, get_db
-from app.models import AIRun, ActionHistory, ActionItem, CarryForward, Decision, Meeting, Transcript
-from app.schemas import CarryCreate, MeetingCreate, TaskUpdate, TranscriptCreate
+from app.models import AIRun, ActionHistory, ActionItem, CarryForward, Decision, Meeting, Participant, Transcript
+from app.schemas import CarryCreate, MeetingCreate, MeetingUpdate, TaskUpdate, TranscriptCreate
 
 Base.metadata.create_all(bind=engine)
 app = FastAPI(title="DigiPlus")
@@ -126,6 +126,35 @@ def carry_forward(task_id: str, data: CarryCreate, db: Session = Depends(get_db)
     db.add(ActionHistory(action_item_id=task.id, event_type="carried_forward", detail=f"Carried to {target.title}"))
     db.commit()
     return {"status": "carried_forward"}
+
+
+@app.patch("/api/meetings/{meeting_id}")
+def update_meeting(meeting_id: str, data: MeetingUpdate, db: Session = Depends(get_db)):
+    meeting = db.get(Meeting, meeting_id)
+    if not meeting: raise HTTPException(404, "Meeting not found")
+    for field, value in data.model_dump(exclude_unset=True).items():
+        setattr(meeting, field, value or None)
+    db.commit()
+    return meeting_payload(db, meeting)
+
+
+@app.delete("/api/meetings/{meeting_id}", status_code=204)
+def delete_meeting(meeting_id: str, db: Session = Depends(get_db)):
+    meeting = db.get(Meeting, meeting_id)
+    if not meeting: raise HTTPException(404, "Meeting not found")
+    items = db.scalars(select(ActionItem).where(ActionItem.meeting_id == meeting_id)).all()
+    for item in items:
+        db.execute(sql_delete(ActionHistory).where(ActionHistory.action_item_id == item.id))
+        db.execute(sql_delete(CarryForward).where(CarryForward.action_item_id == item.id))
+    db.execute(sql_delete(CarryForward).where(CarryForward.to_meeting_id == meeting_id))
+    db.execute(sql_delete(ActionItem).where(ActionItem.meeting_id == meeting_id))
+    db.execute(sql_delete(Decision).where(Decision.meeting_id == meeting_id))
+    db.execute(sql_delete(AIRun).where(AIRun.meeting_id == meeting_id))
+    db.execute(sql_delete(Transcript).where(Transcript.meeting_id == meeting_id))
+    db.execute(sql_delete(Participant).where(Participant.meeting_id == meeting_id))
+    db.delete(meeting)
+    db.commit()
+    return Response(status_code=204)
 
 
 @app.get("/")

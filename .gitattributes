@@ -1,0 +1,4 @@
+# Ensure consistent line endings
+* text=auto
+*.sh text eol=lf
+Dockerfile text eol=lf
