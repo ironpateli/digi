@@ -41,7 +41,7 @@ def extract_recap(transcript: str) -> dict:
         )
     client = Groq(api_key=settings.groq_api_key)
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="llama3-70b-8192",
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": f"Extract the meeting information from this transcript:\n\n{transcript}"},
