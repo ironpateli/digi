@@ -24,20 +24,20 @@ The first version is a modular monolith:
 Web frontend
     |
     v
-Backend API  <---->  PostgreSQL
+FastAPI application  <---->  PostgreSQL
     |
-    +----> background AI worker  <----> LLM provider
+    +----> LLM provider
 ```
 
-The backend owns all database access and LLM calls. The browser never receives an LLM API key. A background worker handles transcript extraction and brief generation so the UI is never held open while an AI request runs.
+The backend owns all database access and LLM calls. The browser never receives an LLM API key. For the first version, AI extraction happens in the API request while the frontend displays a loading state. This is appropriate for normal pasted meeting transcripts and removes queue/worker infrastructure.
 
 ### Transcript to approved record flow
 
 ```text
 1. User creates a meeting or handover.
 2. User enters notes or uploads/pastes a transcript.
-3. API stores the raw source and queues an AI run.
-4. Worker calls the LLM and requires schema-constrained JSON.
+3. API stores the raw source and creates an AI run.
+4. API calls the LLM and requires schema-constrained JSON.
 5. API validates the JSON and creates proposed decisions and action items.
 6. Frontend displays proposals for edit, approval, or rejection.
 7. Approved proposals are written as official decisions and action items.
@@ -190,30 +190,27 @@ The final deliverable is a public deployed application link. The reviewer must n
 Public HTTPS URL
     |
     v
-Railway web service
+Render web service
   - FastAPI API
   - compiled React single-page app
     |
-    +----> Railway PostgreSQL
-    +----> Railway Redis
-    +----> Railway worker service (AI jobs)
-    +----> object storage (uploaded source files, if enabled)
+    +----> Render PostgreSQL
     +----> OpenAI Responses API
 ```
 
-Use **Railway** for the hosted API, worker, managed PostgreSQL, Redis, environment secrets, logs, and deployment from the Git repository. Package the React application in the same Docker image and let FastAPI serve the built static files. This gives the project one public URL and avoids CORS and multi-site deployment complexity. The worker uses the same source image with a different start command.
+Use **Render** for one hosted FastAPI service, managed PostgreSQL, environment secrets, logs, and deployment from the Git repository. Package the React application in the same Docker image and let FastAPI serve the built static files. This gives the project one public URL and avoids CORS and multi-site deployment complexity.
 
-The hosting configuration will run database migrations automatically on deploy. A repeatable seed command will create a demo team, meetings, transcripts, tasks, and knowledge documents so the deployed link is useful immediately. The only required secrets are hosted environment variables such as `DATABASE_URL`, `REDIS_URL`, and `OPENAI_API_KEY`; no secret is committed to Git.
+The application startup command will run database migrations, then an idempotent seed command that creates a demo team, two meetings, one handover, transcripts, approved tasks, and decisions when the database is empty. The deployed link is therefore useful as soon as it opens. The only required secrets are hosted environment variables such as `DATABASE_URL`, `OPENAI_API_KEY`, and `SECRET_KEY`; no secret is committed to Git.
 
-For uploaded transcript or knowledge files, use an S3-compatible managed object store such as Cloudflare R2. The database stores file metadata and a private object key, never a public credential or unbounded file blob.
+The first version accepts pasted transcripts and notes only. File upload and object storage are deferred until they are genuinely needed.
 
 ### Backend: Python + FastAPI
 
-**Recommendation: Python 3.12, FastAPI, SQLAlchemy 2, Alembic, and a background worker such as Celery/RQ/Arq.**
+**Recommendation: Python 3.12, FastAPI, SQLAlchemy 2, and Alembic.**
 
 Python is the strongest fit because AI integration, JSON-schema validation, embeddings/retrieval, and background processing have excellent ecosystem support. FastAPI gives typed request/response contracts, automatic OpenAPI documentation, async I/O for provider calls, and concise, maintainable APIs.
 
-Use **Celery with Redis** for the first production deployment. The API enqueues work and returns immediately; the Railway worker performs the LLM call, writes its result, and exposes progress through the `ai_runs` record. The frontend polls a status endpoint initially, avoiding unnecessary real-time infrastructure.
+No queue or worker is needed initially. The transcript endpoint creates the `ai_runs` row, calls the LLM, validates the response, and writes proposals before returning. The frontend shows a clear processing state. If processing later becomes slow or long-running, the same `ai_runs` table can support adding a worker without changing the user-facing data model.
 
 ### Database: PostgreSQL
 
@@ -223,7 +220,7 @@ Use PostgreSQL from the start. It provides reliable relational integrity for the
 
 Use **React, TypeScript, Vite, React Router, TanStack Query, and Tailwind CSS with a small accessible component library such as shadcn/ui.**
 
-This keeps the UI simple and fast: a meetings list, meeting detail/review screen, action-item board, handover page, and knowledge search. TanStack Query handles polling/refetching an asynchronous AI job without custom state machinery. The Vite build is served by the hosted FastAPI service, rather than requiring a separate frontend deployment.
+This keeps the UI simple and fast: a meetings list, meeting detail/review screen, action-item board, handover page, and knowledge search. The Vite build is served by the hosted FastAPI service, rather than requiring a separate frontend deployment.
 
 ### LLM integration
 
@@ -243,8 +240,8 @@ The AI provider remains behind an `AIService` interface so a future provider/mod
 
 ## Recommended first implementation slice
 
-1. Meeting creation, participant management, manual notes, and transcripts.
+1. Meeting creation, participant management, manual notes, and pasted transcripts.
 2. AI transcript extraction into reviewable proposed summary, decisions, and action items.
 3. Approval screen and official action-item lifecycle with history/outcome.
 4. Carry-forward flow and basic catch-up brief.
-5. Knowledge linking and Handover Risk Radar.
+5. Seeded demo data and Handover Risk Radar.
