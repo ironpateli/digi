@@ -15,6 +15,7 @@ dist/
 *.log
 logs/
 tmp/
+digiplus.db
 
 # Editors and operating systems
 .vscode/

@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: digiplus
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: digiplus-db
+          property: connectionString
+      - key: GROQ_API_KEY
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+      - key: APP_ENV
+        value: production
+
+databases:
+  - name: digiplus-db
+    plan: free
+    databaseName: digiplus
+    user: digiplus
